@@ -3522,10 +3522,11 @@ class Axes(_AxesBase):
         eb_cap_style['color'] = ecolor
 
         barcols = []
-        caplines = []
+        caplines = {'x': [], 'y': []}
 
         # Vectorized fancy-indexer.
-        def apply_mask(arrays, mask): return [array[mask] for array in arrays]
+        def apply_mask(arrays, mask):
+            return [array[mask] for array in arrays]
 
         # dep: dependent dataset, indep: independent dataset
         for (dep_axis, dep, err, lolims, uplims, indep, lines_func,
@@ -3556,9 +3557,17 @@ class Axes(_AxesBase):
             #     return dep - elow * ~lolims, dep + ehigh * ~uplims
             # except that broadcast_to would strip units.
             low, high = dep + np.row_stack([-(1 - lolims), 1 - uplims]) * err
-
-            barcols.append(lines_func(
-                *apply_mask([indep, low, high], everymask), **eb_lines_style))
+            if self.name == "polar":
+                delta_r = 0
+                if dep_axis == "x":
+                    delta_r = indep*(1-np.cos((high-low).astype(float)/2))
+                barcols.append(lines_func(
+                    *apply_mask([indep+delta_r, low, high], everymask),
+                                **eb_lines_style))
+            else:
+                barcols.append(lines_func(
+                    *apply_mask([indep, low, high], everymask),
+                                **eb_lines_style))
             # Normal errorbars for points without upper/lower limits.
             nolims = ~(lolims | uplims)
             if nolims.any() and capsize > 0:
@@ -3571,7 +3580,7 @@ class Axes(_AxesBase):
                     line = mlines.Line2D(indep_masked, indep_masked,
                                          marker=marker, **eb_cap_style)
                     line.set(**{f"{dep_axis}data": lh_masked})
-                    caplines.append(line)
+                    caplines[dep_axis].append(line)
             for idx, (lims, hl) in enumerate([(lolims, high), (uplims, low)]):
                 if not lims.any():
                     continue
@@ -3585,15 +3594,38 @@ class Axes(_AxesBase):
                 line = mlines.Line2D(x_masked, y_masked,
                                      marker=hlmarker, **eb_cap_style)
                 line.set(**{f"{dep_axis}data": hl_masked})
-                caplines.append(line)
+                caplines[dep_axis].append(line)
                 if capsize > 0:
-                    caplines.append(mlines.Line2D(
+                    caplines[dep_axis].append(mlines.Line2D(
                         x_masked, y_masked, marker=marker, **eb_cap_style))
-
-        for l in caplines:
-            self.add_line(l)
+        if self.name == 'polar':
+            for axis in caplines:
+                if not caplines[axis]:
+                    continue
+                lo, hi = caplines[axis]
+                for (lo_theta, lo_r,
+                     hi_theta, hi_r) in zip(
+                            lo.get_xdata(), lo.get_ydata(),
+                            hi.get_xdata(), hi.get_ydata()):
+                    # Rotate caps to be perpendicular to the error bars
+                    rotation = (lo_theta + hi_theta)/2
+                    if axis == 'x':
+                        lo_r += lo_r*(1-np.cos((hi_theta-lo_theta)/2))
+                        hi_r += hi_r*(1-np.cos((hi_theta-lo_theta)/2))
+                        rotation += np.pi / 2
+                    ms = mmarkers.MarkerStyle(marker=marker)
+                    ms._transform = mtransforms.Affine2D().rotate(rotation)
+                    self.add_line(mlines.Line2D([lo_theta], [lo_r],
+                                  marker=ms, **eb_cap_style))
+                    self.add_line(mlines.Line2D([hi_theta], [hi_r],
+                                  marker=ms, **eb_cap_style))
+        else:
+            for axis in caplines:
+                for l in caplines[axis]:
+                    self.add_line(l)
 
         self._request_autoscale_view()
+        caplines = caplines['x'] + caplines['y']
         errorbar_container = ErrorbarContainer(
             (data_line, tuple(caplines), tuple(barcols)),
             has_xerr=(xerr is not None), has_yerr=(yerr is not None),
